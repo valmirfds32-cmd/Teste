@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Desenhar sobre a Câmera com Imagem de Fundo</title>
+    <title>Sobreposição de Imagem com Zoom</title>
     <style>
         * {
             box-sizing: border-box;
@@ -17,7 +17,6 @@
             background-color: #000;
             font-family: Arial, sans-serif;
         }
-        /* Container principal */
         #app-container {
             position: relative;
             width: 100%;
@@ -33,30 +32,36 @@
             object-fit: cover;
             z-index: 1;
         }
-        /* Imagem carregada pelo usuário (camada intermediária) */
-        #overlay-img {
+        /* Container que vai sofrer o Zoom e Movimento */
+        #transform-container {
             position: absolute;
             top: 0;
             left: 0;
             width: 100%;
             height: 100%;
-            object-fit: contain; /* Mantém a proporção da foto carregada sem distorcer */
             z-index: 2;
-            pointer-events: none; /* CRUCIAL: Permite que os toques na tela passem para o canvas */
-            opacity: 0.5; /* Opacidade inicial em 50% */
-            display: none; /* Oculta até que uma imagem seja selecionada */
+            transform-origin: 0 0; /* Origem do zoom no canto superior esquerdo para o cálculo manual */
+            pointer-events: none; /* Permite que o toque passe para a área de captura global */
         }
-        /* Canvas para o desenho (sobreposto no topo) */
-        canvas {
+        /* Imagem carregada pelo usuário */
+        #overlay-img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            opacity: 0.5;
+            display: none;
+        }
+        /* Área invisível no topo que captura os gestos de arrastar e zoom */
+        #gesture-area {
             position: absolute;
             top: 0;
             left: 0;
             width: 100%;
             height: 100%;
             z-index: 3;
-            touch-action: none; /* Impede o scroll ou zoom da tela ao desenhar */
+            touch-action: none; /* Bloqueia o zoom nativo do navegador */
         }
-        /* Barra de ferramentas principal (base) */
+        /* Barra de ferramentas (base) */
         #controls {
             position: absolute;
             bottom: 20px;
@@ -70,9 +75,8 @@
             border-radius: 50px;
             align-items: center;
             box-shadow: 0 4px 15px rgba(0,0,0,0.5);
-            max-width: 90%;
         }
-        /* Painel secundário para o controle de opacidade (no topo da tela) */
+        /* Painel para o controle de opacidade (topo) */
         #opacity-panel {
             position: absolute;
             top: 20px;
@@ -82,7 +86,7 @@
             background: rgba(0, 0, 0, 0.7);
             padding: 10px 20px;
             border-radius: 25px;
-            display: none; /* Oculta até que uma imagem seja carregada */
+            display: none;
             align-items: center;
             gap: 10px;
             color: white;
@@ -93,15 +97,6 @@
             width: 120px;
             accent-color: #00ffcc;
         }
-        input[type="color"] {
-            border: none;
-            width: 35px;
-            height: 35px;
-            border-radius: 50%;
-            cursor: pointer;
-            background: none;
-        }
-        /* Esconde o input file padrão do navegador para usarmos um botão estilizado */
         #fileInput {
             display: none;
         }
@@ -109,15 +104,15 @@
             background: #2ed573;
             color: white;
             border: none;
-            padding: 8px 15px;
+            padding: 10px 20px;
             border-radius: 20px;
             font-weight: bold;
             cursor: pointer;
             font-size: 14px;
             white-space: nowrap;
         }
-        .btn-clear {
-            background: #ff4757;
+        .btn-reset {
+            background: #ffa502;
         }
         .btn:active {
             opacity: 0.8;
@@ -129,51 +124,43 @@
     <div id="app-container">
         <video id="video" autoplay playsinline></video>
         
-        <img id="overlay-img" alt="Referência">
+        <div id="transform-container" id="transformContainer">
+            <img id="overlay-img" alt="Referência">
+        </div>
         
-        <canvas id="canvas"></canvas>
+        <div id="gesture-area" id="gestureArea"></div>
         
-        <div id="opacity-panel">
+        <div id="opacity-panel" id="opacityPanel">
             <label for="opacitySlider">Transparência:</label>
             <input type="range" id="opacitySlider" min="0" max="1" step="0.01" value="0.5">
         </div>
 
         <div id="controls">
-            <input type="color" id="colorPicker" value="#00ffcc">
-            
-            <label id="uploadBtn" class="btn" for="fileInput">Abrir Imagem</label>
+            <label class="btn" for="fileInput">Abrir Imagem</label>
             <input type="file" id="fileInput" accept="image/*">
-            
-            <button id="clearBtn" class="btn btn-clear">Limpar</button>
+            <button id="resetBtn" class="btn btn-reset">Resetar Posição</button>
         </div>
     </div>
 
     <script>
         const video = document.getElementById('video');
-        const canvas = document.getElementById('canvas');
-        const ctx = canvas.getContext('2d');
-        const colorPicker = document.getElementById('colorPicker');
-        const clearBtn = document.getElementById('clearBtn');
-        
-        // Elementos adicionados para gerenciamento da foto e opacidade
         const fileInput = document.getElementById('fileInput');
         const overlayImg = document.getElementById('overlay-img');
+        const transformContainer = document.getElementById('transform-container');
+        const gestureArea = document.getElementById('gesture-area');
         const opacityPanel = document.getElementById('opacity-panel');
         const opacitySlider = document.getElementById('opacitySlider');
+        const resetBtn = document.getElementById('resetBtn');
 
-        // Ajusta o tamanho do canvas para o tamanho real da tela
-        function resizeCanvas() {
-            canvas.width = window.innerWidth;
-            canvas.height = window.innerHeight;
-            
-            // Configurações do traço
-            ctx.strokeStyle = colorPicker.value;
-            ctx.lineWidth = 5;
-            ctx.lineCap = 'round';
-            ctx.lineJoin = 'round';
-        }
+        // Estado da imagem (Posição e Zoom)
+        let scale = 1;
+        let pointX = 0;
+        let pointY = 0;
+        let start = { x: 0, y: 0 };
+        let isPanning = false;
+        let initDist = 0; // Distância inicial do gesto de pinça
 
-        // Inicia a câmera traseira do celular
+        // Inicia a câmera
         async function initCamera() {
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({
@@ -186,7 +173,7 @@
             }
         }
 
-        // Lógica para ler o arquivo de imagem local e exibi-lo na tela
+        // Carrega a imagem
         fileInput.addEventListener('change', function(e) {
             const file = e.target.files[0];
             if (file) {
@@ -194,62 +181,88 @@
                 reader.onload = function(event) {
                     overlayImg.src = event.target.result;
                     overlayImg.style.display = 'block';
-                    opacityPanel.style.display = 'flex'; // Exibe o slider no topo da tela
+                    opacityPanel.style.display = 'flex';
+                    resetTransform();
                 };
                 reader.readAsDataURL(file);
             }
         });
 
-        // Lógica da scrollbar de transparência (Slider)
+        // Controle de Transparência
         opacitySlider.addEventListener('input', function(e) {
             overlayImg.style.opacity = e.target.value;
         });
 
-        // Lógica do Desenho (Touch Events para Celular)
-        let isDrawing = false;
-
-        function getTouchPos(touchEvent) {
-            const rect = canvas.getBoundingClientRect();
-            return {
-                x: touchEvent.touches[0].clientX - rect.left,
-                y: touchEvent.touches[0].clientY - rect.top
-            };
+        // Aplica as transformações de CSS (Apenas mover e dar zoom, sem rotação)
+        function updateTransform() {
+            transformContainer.style.transform = `translate(${pointX}px, ${pointY}px) scale(${scale})`;
         }
 
-        canvas.addEventListener('touchstart', (e) => {
-            isDrawing = true;
-            const pos = getTouchPos(e);
-            ctx.beginPath();
-            ctx.moveTo(pos.x, pos.y);
+        function resetTransform() {
+            scale = 1;
+            pointX = 0;
+            pointY = 0;
+            updateTransform();
+        }
+
+        resetBtn.addEventListener('click', resetTransform);
+
+        // --- LÓGICA DE GESTOS (TOUCH) ---
+
+        // Calcula a distância entre dois dedos
+        function getDistance(t1, t2) {
+            return Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
+        }
+
+        gestureArea.addEventListener('touchstart', function(e) {
             e.preventDefault();
+            
+            if (e.touches.length === 1) {
+                // Arrastar com um dedo
+                isPanning = true;
+                start = { x: e.touches[0].clientX - pointX, y: e.touches[0].clientY - pointY };
+            } else if (e.touches.length === 2) {
+                // Zoom com dois dedos (Pinça)
+                isPanning = false;
+                initDist = getDistance(e.touches[0], e.touches[1]);
+            }
         });
 
-        canvas.addEventListener('touchmove', (e) => {
-            if (!isDrawing) return;
-            const pos = getTouchPos(e);
-            ctx.lineTo(pos.x, pos.y);
-            ctx.stroke();
+        gestureArea.addEventListener('touchmove', function(e) {
             e.preventDefault();
+            
+            if (isPanning && e.touches.length === 1) {
+                // Move a imagem baseado no arrasto
+                pointX = e.touches[0].clientX - start.x;
+                pointY = e.touches[0].clientY - start.y;
+                updateTransform();
+            } else if (e.touches.length === 2) {
+                // Calcula o novo zoom proporcionalmente à distância dos dedos
+                const dist = getDistance(e.touches[0], e.touches[1]);
+                const factor = dist / initDist;
+                
+                // Aplica o fator de escala de forma suave
+                scale *= factor;
+                
+                // Limita o zoom para não sumir e nem travar o navegador
+                if (scale < 0.1) scale = 0.1;
+                if (scale > 10) scale = 10;
+                
+                initDist = dist; // Atualiza a distância de referência
+                updateTransform();
+            }
         });
 
-        canvas.addEventListener('touchend', () => {
-            isDrawing = false;
-            ctx.beginPath();
+        gestureArea.addEventListener('touchend', function(e) {
+            if (e.touches.length === 0) {
+                isPanning = false;
+            } else if (e.touches.length === 1) {
+                // Se tirou um dedo mas deixou o outro, retoma o arrasto suavemente
+                isPanning = true;
+                start = { x: e.touches[0].clientX - pointX, y: e.touches[0].clientY - pointY };
+            }
         });
 
-        // Atualiza a cor do pincel
-        colorPicker.addEventListener('input', (e) => {
-            ctx.strokeStyle = e.target.value;
-        });
-
-        // Limpa a tela de desenho
-        clearBtn.addEventListener('click', () => {
-            ctx.clearRect(0, 0, canvas.width, canvas.height);
-        });
-
-        // Inicialização
-        window.addEventListener('resize', resizeCanvas);
-        resizeCanvas();
         initCamera();
     </script>
 </body>
