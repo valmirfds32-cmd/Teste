@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Desenhar sobre a Câmera</title>
+    <title>Desenhar sobre a Câmera com Imagem de Fundo</title>
     <style>
         * {
             box-sizing: border-box;
@@ -23,7 +23,7 @@
             width: 100%;
             height: 100%;
         }
-        /* Vídeo da câmera (fundo) */
+        /* Vídeo da câmera (fundo base) */
         video {
             position: absolute;
             top: 0;
@@ -33,29 +33,65 @@
             object-fit: cover;
             z-index: 1;
         }
-        /* Canvas para o desenho (sobreposto) */
+        /* Imagem carregada pelo usuário (camada intermediária) */
+        #overlay-img {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: contain; /* Mantém a proporção da foto carregada sem distorcer */
+            z-index: 2;
+            pointer-events: none; /* CRUCIAL: Permite que os toques na tela passem para o canvas */
+            opacity: 0.5; /* Opacidade inicial em 50% */
+            display: none; /* Oculta até que uma imagem seja selecionada */
+        }
+        /* Canvas para o desenho (sobreposto no topo) */
         canvas {
             position: absolute;
             top: 0;
             left: 0;
             width: 100%;
             height: 100%;
-            z-index: 2;
-            touch-action: none; /* Impede o scroll da tela ao desenhar */
+            z-index: 3;
+            touch-action: none; /* Impede o scroll ou zoom da tela ao desenhar */
         }
-        /* Barra de ferramentas */
+        /* Barra de ferramentas principal (base) */
         #controls {
             position: absolute;
             bottom: 20px;
             left: 50%;
             transform: translateX(-50%);
-            z-index: 3;
+            z-index: 4;
             display: flex;
             gap: 10px;
-            background: rgba(0, 0, 0, 0.6);
+            background: rgba(0, 0, 0, 0.7);
             padding: 10px 15px;
             border-radius: 50px;
             align-items: center;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+            max-width: 90%;
+        }
+        /* Painel secundário para o controle de opacidade (no topo da tela) */
+        #opacity-panel {
+            position: absolute;
+            top: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 4;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px 20px;
+            border-radius: 25px;
+            display: none; /* Oculta até que uma imagem seja carregada */
+            align-items: center;
+            gap: 10px;
+            color: white;
+            font-size: 14px;
+            box-shadow: 0 4px 15px rgba(0,0,0,0.5);
+        }
+        #opacity-panel input[type="range"] {
+            width: 120px;
+            accent-color: #00ffcc;
         }
         input[type="color"] {
             border: none;
@@ -65,17 +101,26 @@
             cursor: pointer;
             background: none;
         }
-        button {
-            background: #ff4757;
+        /* Esconde o input file padrão do navegador para usarmos um botão estilizado */
+        #fileInput {
+            display: none;
+        }
+        .btn {
+            background: #2ed573;
             color: white;
             border: none;
             padding: 8px 15px;
             border-radius: 20px;
             font-weight: bold;
             cursor: pointer;
+            font-size: 14px;
+            white-space: nowrap;
         }
-        button:active {
-            background: #ff6b81;
+        .btn-clear {
+            background: #ff4757;
+        }
+        .btn:active {
+            opacity: 0.8;
         }
     </style>
 </head>
@@ -84,11 +129,22 @@
     <div id="app-container">
         <video id="video" autoplay playsinline></video>
         
+        <img id="overlay-img" alt="Referência">
+        
         <canvas id="canvas"></canvas>
         
+        <div id="opacity-panel">
+            <label for="opacitySlider">Transparência:</label>
+            <input type="range" id="opacitySlider" min="0" max="1" step="0.01" value="0.5">
+        </div>
+
         <div id="controls">
             <input type="color" id="colorPicker" value="#00ffcc">
-            <button id="clearBtn">Limpar</button>
+            
+            <label id="uploadBtn" class="btn" for="fileInput">Abrir Imagem</label>
+            <input type="file" id="fileInput" accept="image/*">
+            
+            <button id="clearBtn" class="btn btn-clear">Limpar</button>
         </div>
     </div>
 
@@ -98,13 +154,19 @@
         const ctx = canvas.getContext('2d');
         const colorPicker = document.getElementById('colorPicker');
         const clearBtn = document.getElementById('clearBtn');
+        
+        // Elementos adicionados para gerenciamento da foto e opacidade
+        const fileInput = document.getElementById('fileInput');
+        const overlayImg = document.getElementById('overlay-img');
+        const opacityPanel = document.getElementById('opacity-panel');
+        const opacitySlider = document.getElementById('opacitySlider');
 
         // Ajusta o tamanho do canvas para o tamanho real da tela
         function resizeCanvas() {
             canvas.width = window.innerWidth;
             canvas.height = window.innerHeight;
             
-            // Configurações iniciais do traço (precisam ser refeitas ao mudar o tamanho)
+            // Configurações do traço
             ctx.strokeStyle = colorPicker.value;
             ctx.lineWidth = 5;
             ctx.lineCap = 'round';
@@ -115,7 +177,7 @@
         async function initCamera() {
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: 'environment' }, // 'environment' prioriza a câmera traseira
+                    video: { facingMode: 'environment' },
                     audio: false
                 });
                 video.srcObject = stream;
@@ -123,6 +185,25 @@
                 alert('Erro ao acessar a câmera: ' + err.message);
             }
         }
+
+        // Lógica para ler o arquivo de imagem local e exibi-lo na tela
+        fileInput.addEventListener('change', function(e) {
+            const file = e.target.files[0];
+            if (file) {
+                const reader = new FileReader();
+                reader.onload = function(event) {
+                    overlayImg.src = event.target.result;
+                    overlayImg.style.display = 'block';
+                    opacityPanel.style.display = 'flex'; // Exibe o slider no topo da tela
+                };
+                reader.readAsDataURL(file);
+            }
+        });
+
+        // Lógica da scrollbar de transparência (Slider)
+        opacitySlider.addEventListener('input', function(e) {
+            overlayImg.style.opacity = e.target.value;
+        });
 
         // Lógica do Desenho (Touch Events para Celular)
         let isDrawing = false;
@@ -140,7 +221,7 @@
             const pos = getTouchPos(e);
             ctx.beginPath();
             ctx.moveTo(pos.x, pos.y);
-            e.preventDefault(); // Evita comportamentos estranhos do navegador
+            e.preventDefault();
         });
 
         canvas.addEventListener('touchmove', (e) => {
@@ -156,12 +237,12 @@
             ctx.beginPath();
         });
 
-        // Atualiza a cor do pincel quando o usuário escolhe outra
+        // Atualiza a cor do pincel
         colorPicker.addEventListener('input', (e) => {
             ctx.strokeStyle = e.target.value;
         });
 
-        // Limpa a tela
+        // Limpa a tela de desenho
         clearBtn.addEventListener('click', () => {
             ctx.clearRect(0, 0, canvas.width, canvas.height);
         });
