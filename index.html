@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Sobreposição de Imagem com Zoom</title>
+    <title>Sobreposição de Imagem - Câmera Travada</title>
     <style>
         * {
             box-sizing: border-box;
@@ -40,8 +40,8 @@
             width: 100%;
             height: 100%;
             z-index: 2;
-            transform-origin: 0 0; /* Origem do zoom no canto superior esquerdo para o cálculo manual */
-            pointer-events: none; /* Permite que o toque passe para a área de captura global */
+            transform-origin: 0 0;
+            pointer-events: none;
         }
         /* Imagem carregada pelo usuário */
         #overlay-img {
@@ -51,7 +51,7 @@
             opacity: 0.5;
             display: none;
         }
-        /* Área invisível no topo que captura os gestos de arrastar e zoom */
+        /* Área invisível no topo que captura os gestos */
         #gesture-area {
             position: absolute;
             top: 0;
@@ -59,7 +59,7 @@
             width: 100%;
             height: 100%;
             z-index: 3;
-            touch-action: none; /* Bloqueia o zoom nativo do navegador */
+            touch-action: none;
         }
         /* Barra de ferramentas (base) */
         #controls {
@@ -124,13 +124,13 @@
     <div id="app-container">
         <video id="video" autoplay playsinline></video>
         
-        <div id="transform-container" id="transformContainer">
+        <div id="transform-container">
             <img id="overlay-img" alt="Referência">
         </div>
         
-        <div id="gesture-area" id="gestureArea"></div>
+        <div id="gesture-area"></div>
         
-        <div id="opacity-panel" id="opacityPanel">
+        <div id="opacity-panel">
             <label for="opacitySlider">Transparência:</label>
             <input type="range" id="opacitySlider" min="0" max="1" step="0.01" value="0.5">
         </div>
@@ -152,22 +152,59 @@
         const opacitySlider = document.getElementById('opacitySlider');
         const resetBtn = document.getElementById('resetBtn');
 
-        // Estado da imagem (Posição e Zoom)
         let scale = 1;
         let pointX = 0;
         let pointY = 0;
         let start = { x: 0, y: 0 };
         let isPanning = false;
-        let initDist = 0; // Distância inicial do gesto de pinça
+        let initDist = 0;
 
-        // Inicia a câmera
+        // Inicia a câmera tentando fixar os parâmetros físicos dela
         async function initCamera() {
             try {
-                const stream = await navigator.mediaDevices.getUserMedia({
-                    video: { facingMode: 'environment' },
+                const constraints = {
+                    video: {
+                        facingMode: 'environment',
+                        // Solicitamos uma resolução ideal fixa para o navegador não ficar reajustando
+                        width: { ideal: 1920 },
+                        height: { ideal: 1080 }
+                    },
                     audio: false
-                });
+                };
+
+                const stream = await navigator.mediaDevices.getUserMedia(constraints);
                 video.srcObject = stream;
+
+                // Tenta aplicar controles avançados após o vídeo iniciar (Funciona melhor no Chrome/Android)
+                video.onloadedmetadata = async () => {
+                    const track = stream.getVideoTracks()[0];
+                    const capabilities = track.getCapabilities ? track.getCapabilities() : {};
+                    
+                    // Configurações para tentar travar o foco e evitar o "pulsar" da imagem
+                    const advancedConstraints = {};
+                    
+                    if (capabilities.focusMode && capabilities.focusMode.includes('manual')) {
+                        advancedConstraints.focusMode = 'manual';
+                    } else if (capabilities.focusMode && capabilities.focusMode.includes('continuous')) {
+                        // Se não puder manual, deixamos fixo, mas a maioria dos Androids aceita travar
+                        advancedConstraints.focusMode = 'continuous';
+                    }
+
+                    // Remove qualquer zoom digital nativo da própria câmera, se houver suporte
+                    if (capabilities.zoom) {
+                        advancedConstraints.zoom = 1;
+                    }
+
+                    if (Object.keys(advancedConstraints).length > 0) {
+                        try {
+                            await track.applyConstraints({ advanced: [advancedConstraints] });
+                            console.log("Trava de foco/zoom aplicada com sucesso.");
+                        } catch (e) {
+                            console.log("O aparelho rejeitou a trava estrita de hardware:", e);
+                        }
+                    }
+                };
+
             } catch (err) {
                 alert('Erro ao acessar a câmera: ' + err.message);
             }
@@ -193,7 +230,6 @@
             overlayImg.style.opacity = e.target.value;
         });
 
-        // Aplica as transformações de CSS (Apenas mover e dar zoom, sem rotação)
         function updateTransform() {
             transformContainer.style.transform = `translate(${pointX}px, ${pointY}px) scale(${scale})`;
         }
@@ -208,21 +244,16 @@
         resetBtn.addEventListener('click', resetTransform);
 
         // --- LÓGICA DE GESTOS (TOUCH) ---
-
-        // Calcula a distância entre dois dedos
         function getDistance(t1, t2) {
             return Math.hypot(t2.clientX - t1.clientX, t2.clientY - t1.clientY);
         }
 
         gestureArea.addEventListener('touchstart', function(e) {
             e.preventDefault();
-            
             if (e.touches.length === 1) {
-                // Arrastar com um dedo
                 isPanning = true;
                 start = { x: e.touches[0].clientX - pointX, y: e.touches[0].clientY - pointY };
             } else if (e.touches.length === 2) {
-                // Zoom com dois dedos (Pinça)
                 isPanning = false;
                 initDist = getDistance(e.touches[0], e.touches[1]);
             }
@@ -230,25 +261,17 @@
 
         gestureArea.addEventListener('touchmove', function(e) {
             e.preventDefault();
-            
             if (isPanning && e.touches.length === 1) {
-                // Move a imagem baseado no arrasto
                 pointX = e.touches[0].clientX - start.x;
                 pointY = e.touches[0].clientY - start.y;
                 updateTransform();
             } else if (e.touches.length === 2) {
-                // Calcula o novo zoom proporcionalmente à distância dos dedos
                 const dist = getDistance(e.touches[0], e.touches[1]);
                 const factor = dist / initDist;
-                
-                // Aplica o fator de escala de forma suave
                 scale *= factor;
-                
-                // Limita o zoom para não sumir e nem travar o navegador
                 if (scale < 0.1) scale = 0.1;
                 if (scale > 10) scale = 10;
-                
-                initDist = dist; // Atualiza a distância de referência
+                initDist = dist;
                 updateTransform();
             }
         });
@@ -257,7 +280,6 @@
             if (e.touches.length === 0) {
                 isPanning = false;
             } else if (e.touches.length === 1) {
-                // Se tirou um dedo mas deixou o outro, retoma o arrasto suavemente
                 isPanning = true;
                 start = { x: e.touches[0].clientX - pointX, y: e.touches[0].clientY - pointY };
             }
